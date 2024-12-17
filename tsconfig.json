@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "commonjs",
+    "lib": ["es5", "es6", "es2024", "dom"],
+    "allowJs": true,
+    "sourceMap": true,
+    "types": ["@webgpu/types"]
+  }
+}

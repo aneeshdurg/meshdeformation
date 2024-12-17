@@ -1,0 +1,5 @@
+types/
+*.js
+*.js.map
+server.py
+*.pem
