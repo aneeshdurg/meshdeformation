@@ -1,64 +1,68 @@
-<script src="script.js"></script>
-<script>
-let stop = false;
+<!DOCTYPE html>
+<head>
+  <script src="script.js"></script>
+  <script>
+  let stop = false;
 
-document.addEventListener("DOMContentLoaded", () => {
-  let canvas = document.getElementById("mycanvas");
-  canvas.width = 1000;
-  canvas.height = 1000;
+  document.addEventListener("DOMContentLoaded", () => {
+    let canvas = document.getElementById("mycanvas");
+    canvas.width = 1000;
+    canvas.height = 1000;
 
-  let ctx = canvas.getContext("2d");
-  console.log("Created context for main canvas");
+    let ctx = canvas.getContext("2d");
+    console.log("Created context for main canvas");
 
-  let canvas2 = document.getElementById("mycanvas2");
-  canvas2.width = 1000;
-  canvas2.height = 1000;
-  let ctx2 = canvas2.getContext("2d");
-  canvas2.addEventListener("click", (e) => {
-    const rect = e.target.getBoundingClientRect();
-    const x = e.target.width * (e.clientX - rect.left) / rect.width;
-    const y = e.target.height * (e.clientY - rect.top) / rect.height;
+    let canvas2 = document.getElementById("mycanvas2");
+    canvas2.width = 1000;
+    canvas2.height = 1000;
+    let ctx2 = canvas2.getContext("2d");
+    canvas2.addEventListener("click", (e) => {
+      const rect = e.target.getBoundingClientRect();
+      const x = e.target.width * (e.clientX - rect.left) / rect.width;
+      const y = e.target.height * (e.clientY - rect.top) / rect.height;
 
-    ctx2.beginPath();
-    ctx2.fillStyle = "black";
-    ctx2.arc(x, y, 100, 0, 2 * Math.PI);
-    ctx2.fill();
+      ctx2.beginPath();
+      ctx2.fillStyle = "black";
+      ctx2.arc(x, y, 100, 0, 2 * Math.PI);
+      ctx2.fill();
+    });
+
+    console.log("Created context for interactive canvas");
+
+    let md = new MeshDeformation(ctx, 20, 20, ctx.canvas.width / 20, 10, 5);
+    // const f = () => {
+    //   md.applyForce(ctx2);
+    //   md.draw();
+    //   if (!stop) {
+    //     setTimeout(() => {
+    //       requestAnimationFrame(f)
+    //     }, 10);
+    //   }
+    // };
+    // requestAnimationFrame(f);
+    window.md = md;
+    window.ctx2 = ctx2;
   });
 
-  console.log("Created context for interactive canvas");
-
-  let md = new MeshDeformation(ctx, 20, 20, ctx.canvas.width / 20, 10, 5);
-  const f = () => {
-    md.applyForce(imgToData());
-    md.draw();
-    if (!stop) {
-      setTimeout(() => {
-        requestAnimationFrame(f)
-      }, 10);
-    }
-  };
-  requestAnimationFrame(f);
-  window.md = md;
-  window.ctx2 = ctx2;
-});
-
-function cancel() {
-  stop = true;
-}
-
-function imgToData() {
-  let data = ctx2.getImageData(0, 0, ctx2.canvas.width, ctx2.canvas.height).data;
-  let intensity = new Float64Array(ctx2.canvas.width * ctx2.canvas.height);
-  for (let i = 0; i < data.length; i += 4) {
-    let r = data[i + 0];
-    let g = data[i + 1];
-    let b = data[i + 2];
-    let a = data[i + 3];
-    intensity[i / 4] = (a / 255) * (1 - (0.2126 * r + 0.7152 * g + 0.0722 * b));
+  function cancel() {
+    stop = true;
   }
-  return intensity;
-}
-</script>
 
-<canvas id="mycanvas" style="width: 45%"></canvas>
-<canvas id="mycanvas2" style="width: 45%; border: solid"></canvas>
+  function imgToData() {
+    let data = ctx2.getImageData(0, 0, ctx2.canvas.width, ctx2.canvas.height).data;
+    let intensity = new Float64Array(ctx2.canvas.width * ctx2.canvas.height);
+    for (let i = 0; i < data.length; i += 4) {
+      let r = data[i + 0];
+      let g = data[i + 1];
+      let b = data[i + 2];
+      let a = data[i + 3];
+      intensity[i / 4] = (a / 255) * (1 - (0.2126 * r + 0.7152 * g + 0.0722 * b));
+    }
+    return intensity;
+  }
+  </script>
+</head>
+<body>
+  <canvas id="mycanvas" style="width: 45%"></canvas>
+  <canvas id="mycanvas2" style="width: 45%; border: solid"></canvas>
+</body>
