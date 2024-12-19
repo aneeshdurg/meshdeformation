@@ -19,9 +19,6 @@ var<storage, read_write > y_pos_out: array<f32>;
 var<uniform>offset: u32;
 
 
-var<workgroup>dir_x: atomic<i32>;
-var<workgroup>dir_y: atomic<i32>;
-var<workgroup>coeff: atomic<u32>;
 
 fn pixelToIntensity(_px: u32) -> f32 {
   var px = _px;
@@ -37,7 +34,7 @@ fn pixelToIntensity(_px: u32) -> f32 {
   return intensity;
 }
 
-@compute @workgroup_size(1, 1, 1)
+@compute @workgroup_size(64, 1, 1)
 fn main(
   @builtin(global_invocation_id)
 global_id : vec3u,
@@ -53,6 +50,10 @@ local_id : vec3u,
 
   let x = x_pos[i];
   let y = y_pos[i];
+
+  var dir_x: f32 = 0;
+  var dir_y: f32 = 0;
+  var coeff: f32 = 0;
 
   // Coordinates to lookup in intensity_map
   for (var s_y: i32 = 0; s_y < 50; s_y++) {
@@ -71,9 +72,12 @@ local_id : vec3u,
 
         if (r != 0) {
           let local_coeff = 100 * intensity / r2;
-          atomicAdd(& coeff, u32(10000 * local_coeff));
-          atomicAdd(& dir_x, i32(1000 * local_coeff * d_x / r));
-          atomicAdd(& dir_y, i32(1000 * local_coeff * d_y / r));
+          // atomicAdd(& coeff, u32(10000 * local_coeff));
+          // atomicAdd(& dir_x, i32(1000 * local_coeff * d_x / r));
+          // atomicAdd(& dir_y, i32(1000 * local_coeff * d_y / r));
+          coeff += local_coeff;
+          dir_x += local_coeff * d_x / r;
+          dir_y += local_coeff * d_y / r;
         }
       }
     }
@@ -87,10 +91,13 @@ local_id : vec3u,
     let r2: f32 = d_x * d_x + d_y * d_y;
     let r: f32 = sqrt(r2);
 
-    let local_coeff = f32(10) / r2;
-    atomicAdd(& coeff, u32(10000 * local_coeff));
-    atomicAdd(& dir_x, i32(1000 * local_coeff * d_x / r));
-    atomicAdd(& dir_y, i32(1000 * local_coeff * d_y / r));
+    let local_coeff = f32(5) / r2;
+    // atomicAdd(& coeff, u32(10000 * local_coeff));
+    // atomicAdd(& dir_x, i32(1000 * local_coeff * d_x / r));
+    // atomicAdd(& dir_y, i32(1000 * local_coeff * d_y / r));
+    coeff += local_coeff;
+    dir_x += local_coeff * d_x / r;
+    dir_y += local_coeff * d_y / r;
   }
 
   // Wait for all workgroup threads to finish simulating
@@ -98,10 +105,13 @@ local_id : vec3u,
 
   // On a single thread, update the output position for the current particle
   if (local_id.y == 0 && local_id.z == 0) {
-    let total_coeff = f32(atomicLoad(& coeff)) / 10000;
+    // let total_coeff = f32(atomicLoad(& coeff)) / 10000;
+    let total_coeff = coeff;
     if (total_coeff != 0) {
-      var d_x = f32(atomicLoad(& dir_x)) / (1000 * total_coeff);
-      var d_y = f32(atomicLoad(& dir_y)) / (1000 * total_coeff);
+      // var d_x = f32(atomicLoad(& dir_x)) / (1000 * total_coeff);
+      // var d_y = f32(atomicLoad(& dir_y)) / (1000 * total_coeff);
+      var d_x = dir_x / total_coeff;
+      var d_y = dir_y / total_coeff;
 
       let s_dx = sign(d_x);
       let s_dy = sign(d_y);
@@ -111,11 +121,11 @@ local_id : vec3u,
       d_x = s_dx * min(a_dx, f32(0.5));
       d_y = s_dy * min(a_dy, f32(0.5));
 
-      x_pos_out[offset + global_id.x] = x + d_x;
-      y_pos_out[offset + global_id.x] = y + d_y;
+      x_pos_out[i] = x + d_x;
+      y_pos_out[i] = y + d_y;
     } else {
-      x_pos_out[offset + global_id.x] = x;
-      y_pos_out[offset + global_id.x] = y;
+      x_pos_out[i] = x;
+      y_pos_out[i] = y;
     }
   }
 }

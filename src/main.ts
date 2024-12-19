@@ -30,7 +30,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   (window as any).n_steps_per_frame = 1;
 
-  let md = new MeshDeformation(ctx, 25, 25, ctx.canvas.width / 25, 10, 100, 5);
+  let md = new MeshDeformation(ctx, 50, 50, ctx.canvas.width / 50, 10, 100, 1);
   (window as any).t_per_render = 0;
   (window as any).n_renders = 0;
   md.initialization_done.then(() => {

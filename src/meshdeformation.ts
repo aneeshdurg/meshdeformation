@@ -356,17 +356,18 @@ export class MeshDeformation {
     let output_x = this.x_pos_buffers[1 - this.active_buffer_id];
     let output_y = this.y_pos_buffers[1 - this.active_buffer_id];
 
-    const dispatch_x = 256;
-    for (let offset = 0; offset < this.n_elems; offset += dispatch_x) {
+    const wg_x = 64;
+    const dispatch_x = 256 / wg_x;
+    let buffers = [input_x, input_y, this.intensity_map_buf, output_x, output_y, this.offset_buf];
+    const bindGroup = this.device.createBindGroup({
+      layout: this.force_bind_group_layout,
+      entries: buffers.map((b, i) => { return { binding: i, resource: { buffer: b } }; })
+    });
+
+    for (let offset = 0; offset < this.n_elems; offset += (wg_x * dispatch_x)) {
       let input = new Uint32Array([offset]);
       this.device.queue.writeBuffer(
         this.offset_buf, 0, input.buffer, 0, 4);
-
-      let buffers = [input_x, input_y, this.intensity_map_buf, output_x, output_y, this.offset_buf];
-      const bindGroup = this.device.createBindGroup({
-        layout: this.force_bind_group_layout,
-        entries: buffers.map((b, i) => { return { binding: i, resource: { buffer: b } }; })
-      });
 
       const computePipeline = this.device.createComputePipeline({
         label: "forcepipeline",
@@ -390,11 +391,11 @@ export class MeshDeformation {
       this.device.queue.submit([commandEncoder.finish()]);
     }
 
-    let buffers = [input_x, input_y, output_x, output_y, this.offset_buf, this.debug_buf];
-    const bindGroup = this.device.createBindGroup({
+    let c_buffers = [input_x, input_y, output_x, output_y, this.offset_buf, this.debug_buf];
+    const c_bindGroup = this.device.createBindGroup({
       label: "constraint_bind_group",
       layout: this.constraint_bind_group_layout,
-      entries: buffers.map((b, i) => { return { binding: i, resource: { buffer: b } }; })
+      entries: c_buffers.map((b, i) => { return { binding: i, resource: { buffer: b } }; })
     });
     for (let offset = 0; offset < this.n_elems; offset += 256) {
       let input = new Uint32Array([offset]);
@@ -414,7 +415,7 @@ export class MeshDeformation {
       const commandEncoder = this.device.createCommandEncoder();
       const passEncoder = commandEncoder.beginComputePass();
       passEncoder.setPipeline(computePipeline);
-      passEncoder.setBindGroup(0, bindGroup);
+      passEncoder.setBindGroup(0, c_bindGroup);
       passEncoder.dispatchWorkgroups(1, 1, 1);
       passEncoder.end();
       // console.log("encoded compute");
