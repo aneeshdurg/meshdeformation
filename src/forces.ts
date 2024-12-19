@@ -1,4 +1,4 @@
-export function build(width: number, height: number) {
+export function build(width: number, height: number, grid_x: number, grid_spacing: number) {
   return `
 @group(0) @binding(0)
 var<storage, read_write > x_pos: array<f32>;
@@ -37,7 +37,7 @@ fn pixelToIntensity(_px: u32) -> f32 {
   return intensity;
 }
 
-@compute @workgroup_size(1, 10, 10)
+@compute @workgroup_size(1, 1, 1)
 fn main(
   @builtin(global_invocation_id)
 global_id : vec3u,
@@ -46,43 +46,73 @@ global_id : vec3u,
 local_id : vec3u,
 ) {
   // Coordinates of particle for this thread
-  let x = x_pos[offset + global_id.x];
-  let y = y_pos[offset + global_id.x];
+  let i = offset + global_id.x;
+
+  let grid_x = i % ${grid_x};
+  let grid_y = i / ${grid_x};
+
+  let x = x_pos[i];
+  let y = y_pos[i];
 
   // Coordinates to lookup in intensity_map
-  for (var s_y: i32 = 0; s_y < 5; s_y++) {
-    for (var s_z: i32 = 0; s_z < 5; s_z++) {
-      let f_y = i32(floor(y)) + i32(5 * local_id.y) + s_y - 25;
-      let f_x = i32(floor(x)) + i32(5 * local_id.z) + s_z - 25;
+  for (var s_y: i32 = 0; s_y < 50; s_y++) {
+    for (var s_z: i32 = 0; s_z < 50; s_z++) {
+      let f_y = i32(floor(y)) + i32(50 * local_id.y) + s_y - 25;
+      let f_x = i32(floor(x)) + i32(50 * local_id.z) + s_z - 25;
       let d_x: f32 = f32(f_x) - x;
       let d_y: f32 = f32(f_y) - y;
       let r2: f32 = d_x * d_x + d_y * d_y;
       let r: f32 = sqrt(r2);
 
       // Find the force exerted on the particle by contents of the intesity map.
-      if (f_y >= 0 && f_y < ${ height } && f_x >= 0 && f_x < ${ width }) {
-        let f_i = f_y * ${ width } + f_x;
+      if (f_y >= 0 && f_y < ${height} && f_x >= 0 && f_x < ${width}) {
+        let f_i = f_y * ${width} + f_x;
         let intensity = pixelToIntensity(intensity_map[f_i]);
 
         if (r != 0) {
-          let local_coeff = u32(10000 * 100 * intensity / r2);
-          atomicAdd(& coeff, local_coeff);
-          atomicAdd(& dir_x, i32(1000 * d_x / r));
-          atomicAdd(& dir_y, i32(1000 * d_y / r));
+          let local_coeff = 100 * intensity / r2;
+          atomicAdd(& coeff, u32(10000 * local_coeff));
+          atomicAdd(& dir_x, i32(1000 * local_coeff * d_x / r));
+          atomicAdd(& dir_y, i32(1000 * local_coeff * d_y / r));
         }
       }
     }
   }
 
+  if (local_id.y == 0 && local_id.z == 0) {
+    let origin_x = grid_x * ${grid_spacing};
+    let origin_y = grid_y * ${grid_spacing};
+    let d_x: f32 = f32(origin_x) - x;
+    let d_y: f32 = f32(origin_y) - y;
+    let r2: f32 = d_x * d_x + d_y * d_y;
+    let r: f32 = sqrt(r2);
+
+    let local_coeff = f32(10) / r2;
+    atomicAdd(& coeff, u32(10000 * local_coeff));
+    atomicAdd(& dir_x, i32(1000 * local_coeff * d_x / r));
+    atomicAdd(& dir_y, i32(1000 * local_coeff * d_y / r));
+  }
+
   // Wait for all workgroup threads to finish simulating
-  workgroupBarrier();
+  // workgroupBarrier();
 
   // On a single thread, update the output position for the current particle
   if (local_id.y == 0 && local_id.z == 0) {
     let total_coeff = f32(atomicLoad(& coeff)) / 10000;
     if (total_coeff != 0) {
-      x_pos_out[offset + global_id.x] = x + f32(atomicLoad(& dir_x)) / (1000 * total_coeff);
-      y_pos_out[offset + global_id.x] = y + f32(atomicLoad(& dir_y)) / (1000 * total_coeff);
+      var d_x = f32(atomicLoad(& dir_x)) / (1000 * total_coeff);
+      var d_y = f32(atomicLoad(& dir_y)) / (1000 * total_coeff);
+
+      let s_dx = sign(d_x);
+      let s_dy = sign(d_y);
+      let a_dx = abs(d_x);
+      let a_dy = abs(d_y);
+
+      d_x = s_dx * min(a_dx, f32(0.5));
+      d_y = s_dy * min(a_dy, f32(0.5));
+
+      x_pos_out[offset + global_id.x] = x + d_x;
+      y_pos_out[offset + global_id.x] = y + d_y;
     } else {
       x_pos_out[offset + global_id.x] = x;
       y_pos_out[offset + global_id.x] = y;

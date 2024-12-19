@@ -1,4 +1,4 @@
-import { MeshDeformation } from './script';
+import { MeshDeformation } from './meshdeformation';
 
 let stop = false;
 
@@ -28,20 +28,56 @@ document.addEventListener("DOMContentLoaded", () => {
 
   console.log("Created context for interactive canvas");
 
-  let md = new MeshDeformation(ctx, 20, 20, ctx.canvas.width / 20, 10, 5);
+  (window as any).n_steps_per_frame = 1;
+
+  let md = new MeshDeformation(ctx, 25, 25, ctx.canvas.width / 25, 10, 100, 5);
+  (window as any).t_per_render = 0;
+  (window as any).n_renders = 0;
   md.initialization_done.then(() => {
     const f = async () => {
+      let start = performance.now();
       md.draw();
-      await md.applyForce(ctx2);
-      await md.updateCPUpos();
+      for (let i = 0; i < (window as any).n_steps_per_frame; i++) {
+        await md.applyForce(ctx2);
+        // await md.updateCPUpos();
+      }
+      await md.device.queue.onSubmittedWorkDone();
+      let end = performance.now();
+      (window as any).t_per_render += end - start;
+      (window as any).n_renders += 1;
       if (!stop) {
-        setTimeout(() => {
-          requestAnimationFrame(f)
-        }, 1);
+        requestAnimationFrame(f)
+        // setTimeout(() => {
+        //   requestAnimationFrame(f)
+        // }, 1);
       }
     };
     requestAnimationFrame(f);
+
+    (window as any).t_per_draw = 0;
+    (window as any).n_draws = 0;
+    const g = async () => {
+      let start = performance.now();
+      await md.updateCPUpos();
+      md.draw();
+      let end = performance.now();
+      (window as any).t_per_draw += end - start;
+      (window as any).n_draws += 1;
+      setTimeout(() => {
+        requestAnimationFrame(g)
+      }, 30);
+    };
+    requestAnimationFrame(g);
   });
+
+  (window as any).stats = () => {
+    console.log("t_per_render", window.t_per_render);
+    console.log("n_renders", window.n_renders);
+    console.log("avg", window.t_per_render / window.n_renders);
+    console.log("t_per_draw", window.t_per_draw);
+    console.log("n_draws", window.n_draws);
+    console.log("avg", window.t_per_draw / window.n_draws);
+  }
 
 
   function cancel() {

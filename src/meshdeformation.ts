@@ -1,5 +1,6 @@
 import { build as initbuild } from './init';
 import { build as forcesbuild } from './forces';
+import { build as constraintbuild } from './constraint';
 
 const edges = [
   [-1, 0],
@@ -16,17 +17,18 @@ export class MeshDeformation {
   grid_y: number;
   grid_spacing: number;
   min_dist: number;
+  max_dist: number;
   radius: number;
+
+  draw_edges: bool;
 
   n_elems: number;
   x_pos: Float32Array;
   y_pos: Float32Array;
 
-  shader: string;
-
   initialization_done: Promise<void>;
   device: GPUDevice;
-  shaderModule: GPUShaderModule;
+  force_module: GPUShaderModule;
   active_buffer_id: number;
   x_pos_buffers: [GPUBuffer, GPUBuffer];
   y_pos_buffers: [GPUBuffer, GPUBuffer];
@@ -39,7 +41,12 @@ export class MeshDeformation {
 
   offset_buf: GPUBuffer;
 
-  bindGroupLayout: GPUBindGroupLayout;
+  force_bind_group_layout: GPUBindGroupLayout;
+
+  constraint_module: GPUShaderModule;
+  constraint_bind_group_layout: GPUBindGroupLayout;
+
+  debug_buf: GPUBuffer;
 
   constructor(
     ctx: CanvasRenderingContext2D,
@@ -47,6 +54,7 @@ export class MeshDeformation {
     grid_y: number,
     grid_spacing: number,
     min_dist: number,
+    max_dist: number,
     radius: number
   ) {
     this.ctx = ctx;
@@ -54,11 +62,13 @@ export class MeshDeformation {
     this.grid_y = grid_y;
     this.grid_spacing = grid_spacing;
     this.min_dist = min_dist;
+    this.max_dist = max_dist;
     this.radius = radius;
+
+    this.draw_edges = true;
 
     this.n_elems = this.grid_x * this.grid_y;
 
-    this.shader = forcesbuild(this.ctx.canvas.width, this.ctx.canvas.height);
     this.initialization_done = this.async_init();
   }
 
@@ -66,58 +76,73 @@ export class MeshDeformation {
     const adapter = await navigator.gpu.requestAdapter();
     this.device = await adapter.requestDevice();
     console.log("Create compute shader");
-    this.shaderModule = this.device.createShaderModule({
-      code: this.shader,
+    this.force_module = this.device.createShaderModule({
+      code: forcesbuild(this.ctx.canvas.width, this.ctx.canvas.height, this.grid_x, this.grid_spacing),
     });
     console.log("done Create compute shader");
+
+    this.debug_buf = this.device.createBuffer({
+      label: "debug",
+      size: this.n_elems * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+    });
 
     this.active_buffer_id = 0;
     this.x_pos_buffers = [
       this.device.createBuffer({
+        label: "x_pos[0]",
         size: this.n_elems * 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
       }),
       this.device.createBuffer({
+        label: "x_pos[1]",
         size: this.n_elems * 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
       }),
     ];
     this.y_pos_buffers = [
       this.device.createBuffer({
+        label: "y_pos[0]",
         size: this.n_elems * 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
       }),
       this.device.createBuffer({
+        label: "y_pos[1]",
         size: this.n_elems * 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
       }),
     ];
 
     this.staging_x_buf = this.device.createBuffer({
+      label: "staging_x_buf",
       size: this.n_elems * 4,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
     this.staging_y_buf = this.device.createBuffer({
+      label: "staging_y_buf",
       size: this.n_elems * 4,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
 
     this.staging_intensity_buf = this.device.createBuffer({
+      label: "staging_intensity_buf",
       size: this.ctx.canvas.width * this.ctx.canvas.height * 4,
       usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
     });
     this.intensity_map_buf = this.device.createBuffer({
+      label: "intensity_buf",
       size: this.ctx.canvas.width * this.ctx.canvas.height * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
     this.offset_buf = this.device.createBuffer({
+      label: "offset_buf",
       size: 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     console.log("done allocate buffers");
 
-    this.bindGroupLayout = this.device.createBindGroupLayout({
+    this.force_bind_group_layout = this.device.createBindGroupLayout({
       entries: [
         {
           binding: 0,
@@ -167,7 +192,6 @@ export class MeshDeformation {
     // intialize this.x_pos_buffers[this.active_buffer_id] and
     // this.y_pos_buffers[*] to be a grid
     const init_shader = initbuild(this.n_elems, this.grid_x, this.grid_spacing);
-
     const initBindGroupLayout = this.device.createBindGroupLayout({
       entries: [
         {
@@ -241,6 +265,59 @@ export class MeshDeformation {
 
     await this.updateCPUpos();
     console.log("done async init");
+
+    const constraint_src = constraintbuild(this.grid_x, this.grid_y, this.min_dist, this.max_dist);
+    // console.log(constraint_src);
+    this.constraint_module = this.device.createShaderModule({
+      code: constraint_src,
+    });
+    this.constraint_bind_group_layout = this.device.createBindGroupLayout({
+      label: "constraint_bind_group_layout",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "storage",
+          },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "storage",
+          },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "storage",
+          },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "storage",
+          },
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "uniform",
+          },
+        },
+        {
+          binding: 5,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "storage",
+          },
+        },
+      ],
+    });
   }
 
   async updateCPUpos() {
@@ -279,7 +356,7 @@ export class MeshDeformation {
     let output_x = this.x_pos_buffers[1 - this.active_buffer_id];
     let output_y = this.y_pos_buffers[1 - this.active_buffer_id];
 
-    const dispatch_x = 2;
+    const dispatch_x = 256;
     for (let offset = 0; offset < this.n_elems; offset += dispatch_x) {
       let input = new Uint32Array([offset]);
       this.device.queue.writeBuffer(
@@ -287,16 +364,17 @@ export class MeshDeformation {
 
       let buffers = [input_x, input_y, this.intensity_map_buf, output_x, output_y, this.offset_buf];
       const bindGroup = this.device.createBindGroup({
-        layout: this.bindGroupLayout,
+        layout: this.force_bind_group_layout,
         entries: buffers.map((b, i) => { return { binding: i, resource: { buffer: b } }; })
       });
 
       const computePipeline = this.device.createComputePipeline({
+        label: "forcepipeline",
         layout: this.device.createPipelineLayout({
-          bindGroupLayouts: [this.bindGroupLayout],
+          bindGroupLayouts: [this.force_bind_group_layout],
         }),
         compute: {
-          module: this.shaderModule,
+          module: this.force_module,
           entryPoint: "main",
         },
       });
@@ -307,6 +385,37 @@ export class MeshDeformation {
       passEncoder.setPipeline(computePipeline);
       passEncoder.setBindGroup(0, bindGroup);
       passEncoder.dispatchWorkgroups(dispatch_x, 1, 1);
+      passEncoder.end();
+      // console.log("encoded compute");
+      this.device.queue.submit([commandEncoder.finish()]);
+    }
+
+    let buffers = [input_x, input_y, output_x, output_y, this.offset_buf, this.debug_buf];
+    const bindGroup = this.device.createBindGroup({
+      label: "constraint_bind_group",
+      layout: this.constraint_bind_group_layout,
+      entries: buffers.map((b, i) => { return { binding: i, resource: { buffer: b } }; })
+    });
+    for (let offset = 0; offset < this.n_elems; offset += 256) {
+      let input = new Uint32Array([offset]);
+      this.device.queue.writeBuffer(
+        this.offset_buf, 0, input.buffer, 0, 4);
+
+      const computePipeline = this.device.createComputePipeline({
+        label: "constraintpipeline",
+        layout: this.device.createPipelineLayout({
+          bindGroupLayouts: [this.constraint_bind_group_layout],
+        }),
+        compute: {
+          module: this.constraint_module,
+          entryPoint: "main",
+        },
+      });
+      const commandEncoder = this.device.createCommandEncoder();
+      const passEncoder = commandEncoder.beginComputePass();
+      passEncoder.setPipeline(computePipeline);
+      passEncoder.setBindGroup(0, bindGroup);
+      passEncoder.dispatchWorkgroups(1, 1, 1);
       passEncoder.end();
       // console.log("encoded compute");
       this.device.queue.submit([commandEncoder.finish()]);
@@ -347,22 +456,24 @@ export class MeshDeformation {
         this.ctx.arc(x, y, this.radius, 0, 2 * Math.PI);
         this.ctx.stroke();
 
-        for (let edge of edges) {
-          let j_xidx = xidx + edge[0];
-          let j_yidx = yidx + edge[1];
-          if (j_xidx < 0 || j_xidx >= this.grid_x || j_yidx < 0 || j_yidx >= this.grid_y) {
-            continue;
+        if (this.draw_edges) {
+          for (let edge of edges) {
+            let j_xidx = xidx + edge[0];
+            let j_yidx = yidx + edge[1];
+            if (j_xidx < 0 || j_xidx >= this.grid_x || j_yidx < 0 || j_yidx >= this.grid_y) {
+              continue;
+            }
+
+            let j = j_yidx * this.grid_x + j_xidx;
+
+            let j_x = this.x_pos[j];
+            let j_y = this.y_pos[j];
+
+            this.ctx.beginPath();
+            this.ctx.moveTo(x, y);
+            this.ctx.lineTo(j_x, j_y);
+            this.ctx.stroke();
           }
-
-          let j = j_yidx * this.grid_x + j_xidx;
-
-          let j_x = this.x_pos[j];
-          let j_y = this.y_pos[j];
-
-          this.ctx.beginPath();
-          this.ctx.moveTo(x, y);
-          this.ctx.lineTo(j_x, j_y);
-          this.ctx.stroke();
         }
       }
     }
