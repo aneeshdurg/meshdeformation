@@ -1,15 +1,9 @@
-Setting up typescript for development:
+Build instructions:
 
 ```bash
-# Latest typescript/LSP
 nvm install latest
-npm install -g typescript typescript-langugage server
-
-# Get type definitions for WebGPU interfaces
-git clone https://github.com/gpuweb/types
-
-# Compile typescript to js
-make
+npm install
+npx webpack -w
 ```
 
 Generate key pair for SSL
