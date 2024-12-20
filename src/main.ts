@@ -2,10 +2,34 @@ import { MeshDeformation } from './meshdeformation';
 
 let stop = false;
 
-document.addEventListener("DOMContentLoaded", () => {
-  let canvas = (document.getElementById("mycanvas") as HTMLCanvasElement);
+async function setupWebcam() {
+  const video = document.createElement("video");
+  const constraints = { video: true }
+
+  try {
+    if (video.srcObject) {
+      const stream = video.srcObject;
+      stream.getTracks().forEach(function(track: any) {
+        track.stop();
+      });
+      video.srcObject = null;
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = stream;
+    video.play();
+  } catch (err) {
+    alert("Error initializing webcam! " + err);
+    console.log(err);
+  }
+  return video;
+}
+
+async function main(container: HTMLElement) {
+  let canvas = (document.createElement("canvas") as HTMLCanvasElement);
   canvas.width = 1000;
   canvas.height = 1000;
+  container.appendChild(canvas);
 
   let ctx = canvas.getContext("2d");
   console.log("Created context for main canvas");
@@ -26,17 +50,25 @@ document.addEventListener("DOMContentLoaded", () => {
     ctx2.fillStyle = "black";
     ctx2.arc(x, y, 100, 0, 2 * Math.PI);
     ctx2.fill();
-
-    // idata = ctx2.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height).data;
   });
 
-  document.getElementById("clear").addEventListener("click", () => {
+  container.appendChild(document.createElement("br"));
+
+  const clear = document.createElement("button");
+  clear.innerText = "clear";
+  clear.addEventListener("click", () => {
     ctx2.clearRect(0, 0, ctx2.canvas.width, ctx2.canvas.height);
   });
+  container.appendChild(clear);
 
-  document.getElementById("edges").addEventListener("click", () => {
+  const edges = document.createElement("button");
+  edges.innerText = "edges";
+  edges.addEventListener("click", () => {
     md.draw_edges = !md.draw_edges;
   });
+  container.appendChild(edges);
+
+  const video = await setupWebcam();
 
   console.log("Created context for interactive canvas");
 
@@ -66,6 +98,11 @@ document.addEventListener("DOMContentLoaded", () => {
     (window as any).t_per_draw = 0;
     (window as any).n_draws = 0;
     const g = async () => {
+      if (video.readyState != 4) {
+        return;
+      }
+      ctx2.drawImage(video, 0, 0, ctx2.canvas.width, ctx2.canvas.height);
+
       let start = performance.now();
       await md.updateCPUpos();
       md.draw();
@@ -98,5 +135,10 @@ document.addEventListener("DOMContentLoaded", () => {
   (window as any).md = md;
   (window as any).ctx2 = ctx2;
   (window as any).cancel = cancel;
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  let container = document.getElementById("container");
+  main(container);
 });
 
