@@ -1,6 +1,5 @@
 import { build as initbuild } from './init';
 import { build as forcesbuild } from './forces';
-import { build as constraintbuild } from './constraint';
 
 const edges = [
   [-1, 0],
@@ -20,11 +19,16 @@ export class MeshDeformation {
   max_dist: number;
   radius: number;
 
-  draw_edges: bool;
+  reinit: boolean;
+  draw_edges: boolean;
 
   n_elems: number;
   x_pos: Float32Array;
   y_pos: Float32Array;
+
+  init_module: GPUShaderModule;
+  initBindGroupLayout: GPUBindGroupLayout;
+  init_computePipeline: GPUComputePipeline;
 
   initialization_done: Promise<void>;
   device: GPUDevice;
@@ -40,13 +44,9 @@ export class MeshDeformation {
   intensity_map_buf: GPUBuffer;
 
   offset_buf: GPUBuffer;
+  stride_buf: GPUBuffer;
 
   force_bind_group_layout: GPUBindGroupLayout;
-
-  constraint_module: GPUShaderModule;
-  constraint_bind_group_layout: GPUBindGroupLayout;
-
-  debug_buf: GPUBuffer;
 
   constructor(
     ctx: CanvasRenderingContext2D,
@@ -66,6 +66,7 @@ export class MeshDeformation {
     this.radius = radius;
 
     this.draw_edges = true;
+    this.reinit = false;
 
     this.n_elems = this.grid_x * this.grid_y;
 
@@ -77,15 +78,9 @@ export class MeshDeformation {
     this.device = await adapter.requestDevice();
     console.log("Create compute shader");
     this.force_module = this.device.createShaderModule({
-      code: forcesbuild(this.ctx.canvas.width, this.ctx.canvas.height, this.grid_x, this.grid_spacing),
+      code: forcesbuild(this.ctx.canvas.width, this.ctx.canvas.height, this.grid_x, this.grid_spacing, this.n_elems),
     });
     console.log("done Create compute shader");
-
-    this.debug_buf = this.device.createBuffer({
-      label: "debug",
-      size: this.n_elems * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
-    });
 
     this.active_buffer_id = 0;
     this.x_pos_buffers = [
@@ -140,6 +135,11 @@ export class MeshDeformation {
       size: 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.stride_buf = this.device.createBuffer({
+      label: "stride_buf",
+      size: 4,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     console.log("done allocate buffers");
 
     this.force_bind_group_layout = this.device.createBindGroupLayout({
@@ -186,13 +186,20 @@ export class MeshDeformation {
             type: "uniform",
           },
         },
+        {
+          binding: 6,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "uniform",
+          },
+        },
       ],
     });
 
     // intialize this.x_pos_buffers[this.active_buffer_id] and
     // this.y_pos_buffers[*] to be a grid
     const init_shader = initbuild(this.n_elems, this.grid_x, this.grid_spacing);
-    const initBindGroupLayout = this.device.createBindGroupLayout({
+    this.initBindGroupLayout = this.device.createBindGroupLayout({
       entries: [
         {
           binding: 0,
@@ -212,24 +219,24 @@ export class MeshDeformation {
     });
 
     console.log("Create init shader");
-    const init_module = this.device.createShaderModule({
+    this.init_module = this.device.createShaderModule({
       code: init_shader,
     });
     console.log("done Create init shader");
-    const computePipeline = this.device.createComputePipeline({
+    this.init_computePipeline = this.device.createComputePipeline({
       label: "compute force",
       layout: this.device.createPipelineLayout({
-        bindGroupLayouts: [initBindGroupLayout],
+        bindGroupLayouts: [this.initBindGroupLayout],
       }),
       compute: {
-        module: init_module,
+        module: this.init_module,
         entryPoint: "main",
       },
     });
     const commandEncoder = this.device.createCommandEncoder();
 
     const bindGroup = this.device.createBindGroup({
-      layout: initBindGroupLayout,
+      layout: this.initBindGroupLayout,
       entries: [
         {
           binding: 0,
@@ -247,7 +254,7 @@ export class MeshDeformation {
     });
 
     const passEncoder = commandEncoder.beginComputePass();
-    passEncoder.setPipeline(computePipeline);
+    passEncoder.setPipeline(this.init_computePipeline);
     passEncoder.setBindGroup(0, bindGroup);
     passEncoder.dispatchWorkgroups(Math.ceil(this.n_elems / 256));
     passEncoder.end();
@@ -265,59 +272,6 @@ export class MeshDeformation {
 
     await this.updateCPUpos();
     console.log("done async init");
-
-    const constraint_src = constraintbuild(this.grid_x, this.grid_y, this.min_dist, this.max_dist);
-    // console.log(constraint_src);
-    this.constraint_module = this.device.createShaderModule({
-      code: constraint_src,
-    });
-    this.constraint_bind_group_layout = this.device.createBindGroupLayout({
-      label: "constraint_bind_group_layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: {
-            type: "storage",
-          },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: {
-            type: "storage",
-          },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: {
-            type: "storage",
-          },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: {
-            type: "storage",
-          },
-        },
-        {
-          binding: 4,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: {
-            type: "uniform",
-          },
-        },
-        {
-          binding: 5,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: {
-            type: "storage",
-          },
-        },
-      ],
-    });
   }
 
   async updateCPUpos() {
@@ -348,26 +302,61 @@ export class MeshDeformation {
     let idata = ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height).data;
     // console.log(`b0 ${idata[0]}, ${idata[1]}, ${idata[2]}, ${idata[3]}`);
     // console.log(`Writing ${this.intensity_map_buf.size}/${idata.length} bytes for imap`);
+    let start = performance.now();
     this.device.queue.writeBuffer(
       this.intensity_map_buf, 0, idata.buffer, 0, this.intensity_map_buf.size);
+    (window as any).write_time += performance.now() - start;
 
     let input_x = this.x_pos_buffers[this.active_buffer_id];
     let input_y = this.y_pos_buffers[this.active_buffer_id];
     let output_x = this.x_pos_buffers[1 - this.active_buffer_id];
     let output_y = this.y_pos_buffers[1 - this.active_buffer_id];
 
+
+    if (this.reinit) {
+      const bindGroup = this.device.createBindGroup({
+        layout: this.initBindGroupLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: {
+              buffer: this.x_pos_buffers[this.active_buffer_id],
+            },
+          },
+          {
+            binding: 1,
+            resource: {
+              buffer: this.y_pos_buffers[this.active_buffer_id],
+            },
+          }
+        ],
+      });
+
+      const commandEncoder = this.device.createCommandEncoder();
+      const passEncoder = commandEncoder.beginComputePass();
+      passEncoder.setPipeline(this.init_computePipeline);
+      passEncoder.setBindGroup(0, bindGroup);
+      passEncoder.dispatchWorkgroups(Math.ceil(this.n_elems / 256));
+      passEncoder.end();
+      this.device.queue.submit([commandEncoder.finish()]);
+      this.reinit = false;
+    }
+
+
     const wg_x = 64;
-    const dispatch_x = 256 / wg_x;
-    let buffers = [input_x, input_y, this.intensity_map_buf, output_x, output_y, this.offset_buf];
+    const stride = 8;
+    const dispatch_x = (256 / wg_x);
+    let buffers = [input_x, input_y, this.intensity_map_buf, output_x, output_y, this.offset_buf, this.stride_buf];
     const bindGroup = this.device.createBindGroup({
       layout: this.force_bind_group_layout,
       entries: buffers.map((b, i) => { return { binding: i, resource: { buffer: b } }; })
     });
 
-    for (let offset = 0; offset < this.n_elems; offset += (wg_x * dispatch_x)) {
-      let input = new Uint32Array([offset]);
+    for (let offset = 0; offset < this.n_elems; offset += (stride * wg_x * dispatch_x)) {
       this.device.queue.writeBuffer(
-        this.offset_buf, 0, input.buffer, 0, 4);
+        this.offset_buf, 0, new Uint32Array([offset]).buffer, 0, 4);
+      this.device.queue.writeBuffer(
+        this.stride_buf, 0, new Uint32Array([stride]).buffer, 0, 4);
 
       const computePipeline = this.device.createComputePipeline({
         label: "forcepipeline",
@@ -389,37 +378,7 @@ export class MeshDeformation {
       passEncoder.end();
       // console.log("encoded compute");
       this.device.queue.submit([commandEncoder.finish()]);
-    }
-
-    let c_buffers = [input_x, input_y, output_x, output_y, this.offset_buf, this.debug_buf];
-    const c_bindGroup = this.device.createBindGroup({
-      label: "constraint_bind_group",
-      layout: this.constraint_bind_group_layout,
-      entries: c_buffers.map((b, i) => { return { binding: i, resource: { buffer: b } }; })
-    });
-    for (let offset = 0; offset < this.n_elems; offset += 256) {
-      let input = new Uint32Array([offset]);
-      this.device.queue.writeBuffer(
-        this.offset_buf, 0, input.buffer, 0, 4);
-
-      const computePipeline = this.device.createComputePipeline({
-        label: "constraintpipeline",
-        layout: this.device.createPipelineLayout({
-          bindGroupLayouts: [this.constraint_bind_group_layout],
-        }),
-        compute: {
-          module: this.constraint_module,
-          entryPoint: "main",
-        },
-      });
-      const commandEncoder = this.device.createCommandEncoder();
-      const passEncoder = commandEncoder.beginComputePass();
-      passEncoder.setPipeline(computePipeline);
-      passEncoder.setBindGroup(0, c_bindGroup);
-      passEncoder.dispatchWorkgroups(1, 1, 1);
-      passEncoder.end();
-      // console.log("encoded compute");
-      this.device.queue.submit([commandEncoder.finish()]);
+      // console.log("queue", offset);
     }
 
     const copy_output_commandEncoder = this.device.createCommandEncoder();
