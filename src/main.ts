@@ -1,6 +1,19 @@
 import { MeshDeformation } from './meshdeformation';
+import * as HME from "h264-mp4-encoder";
 
 let stop = false;
+
+function _download(data_blob, filename) {
+  const downloader = document.createElement('a');
+  downloader.setAttribute('href', URL.createObjectURL(data_blob));
+  downloader.setAttribute('download', filename);
+  downloader.style.display = "none";
+  document.body.appendChild(downloader);
+
+  downloader.click();
+
+  document.body.removeChild(downloader);
+}
 
 async function setupWebcam() {
   const video = document.createElement("video");
@@ -55,6 +68,8 @@ async function main(container: HTMLElement) {
 
   container.appendChild(document.createElement("br"));
 
+  const circles = [];
+
   const clear = document.createElement("button");
   clear.innerText = "clear";
   clear.addEventListener("click", () => {
@@ -75,6 +90,40 @@ async function main(container: HTMLElement) {
 
   (window as any).n_steps_per_frame = 1;
 
+  const encoder = await HME.createH264MP4Encoder()
+  encoder.width = 1000;
+  encoder.height = 1000;
+  encoder.initialize();
+
+  let frame_cnt = 0;
+  let n_frames = 300;
+
+  let record_canvas = document.createElement("canvas");
+  record_canvas.width = 1000;
+  record_canvas.height = 1000;
+  let record_ctx = record_canvas.getContext("2d");
+
+  let record_frame = () => {
+    if (frame_cnt < n_frames) {
+      record_ctx.clearRect(0, 0, record_ctx.canvas.width, record_ctx.canvas.height);
+      record_ctx.fillStyle = "white";
+      record_ctx.rect(0, 0, record_ctx.canvas.width, record_ctx.canvas.height);
+      record_ctx.fill();
+      record_ctx.drawImage(canvas, 0, 0, record_canvas.width, record_canvas.height);
+      encoder.addFrameRgba(
+        record_ctx.getImageData(0, 0, record_canvas.width, record_canvas.height).data
+      );
+      frame_cnt += 1;
+      console.log(frame_cnt);
+      if (frame_cnt == n_frames) {
+        encoder.finalize();
+        const data = encoder.FS.readFile(encoder.outputFilename);
+        const blob = new Blob([new Uint8Array(data)], { type: 'octet/stream' });
+        _download(blob, "raindrop_large.mp4");
+      }
+    }
+  };
+
   let n_elems = 200;
   let spacing = ctx.canvas.width / n_elems;
   let md = new MeshDeformation(ctx, n_elems, n_elems, spacing, spacing / 4, spacing * 4, 1);
@@ -84,6 +133,7 @@ async function main(container: HTMLElement) {
   (window as any).interval = 0;
   let theta = 0;
   let last_start = 0;
+  // md.draw_edges = false;
   md.initialization_done.then(() => {
     const f = async () => {
       let start = performance.now();
@@ -94,19 +144,40 @@ async function main(container: HTMLElement) {
       (window as any).t_per_render += end - start;
       (window as any).n_renders += 1;
 
-
-      if (video.readyState == 4) {
-        ctx2.drawImage(video, 0, 0, ctx2.canvas.width, ctx2.canvas.height);
+      if (Math.random() < 0.5) {
+        let x = Math.random() * ctx2.canvas.width;
+        let y = Math.random() * ctx2.canvas.width;
+        let r = Math.random() * 50 + 50;
+        if (circles.length > 10 && Math.random() < 0.75) {
+          circles.shift();
+        }
+        circles.push([x, y, r]);
       }
+      ctx2.clearRect(0, 0, ctx2.canvas.width, ctx2.canvas.height);
+      for (let circle of circles) {
+        let x = circle[0];
+        let y = circle[1];
+        let r = circle[2];
+        ctx2.beginPath();
+        ctx2.fillStyle = "black";
+        ctx2.arc(x, y, r, 0, 2 * Math.PI);
+        ctx2.fill();
+      }
+
+      // if (video.readyState == 4) {
+      //   ctx2.drawImage(video, 0, 0, ctx2.canvas.width, ctx2.canvas.height);
+      // }
       // ctx2.clearRect(0, 0, ctx2.canvas.width, ctx2.canvas.height);
-      let x = Math.sin(theta) * 450 + 500;
-      let y = Math.cos(theta) * 450 + 500;
-      ctx2.beginPath();
-      ctx2.fillStyle = "black";
-      ctx2.arc(x, y, 100, 0, 2 * Math.PI);
-      ctx2.fill();
+      // let x = Math.sin(theta) * 450 + 500;
+      // let y = Math.cos(theta) * 450 + 500;
+      // ctx2.beginPath();
+      // ctx2.fillStyle = "black";
+      // ctx2.arc(x, y, 100, 0, 2 * Math.PI);
+      // ctx2.fill();
 
       theta += 0.1;
+
+      record_frame();
 
       (window as any).interval += start - last_start;
       last_start = start;

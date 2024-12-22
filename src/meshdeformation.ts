@@ -12,7 +12,7 @@ const edges = [
 ];
 
 export class MeshDeformation {
-  ctx: CanvasRenderingContext2D;
+  ctx: GPUCanvasContext;
   grid_x: number;
   grid_y: number;
   grid_spacing: number;
@@ -22,6 +22,7 @@ export class MeshDeformation {
 
   reinit: boolean;
   draw_edges: boolean;
+  draw_nodes: boolean;
 
   n_elems: number;
   x_pos: Float32Array;
@@ -49,6 +50,8 @@ export class MeshDeformation {
 
   image_buf: GPUBuffer;
   image_reset: Float32Array;
+  random_buf: GPUBuffer;
+  ridx: number;
 
   force_bind_group_layout: GPUBindGroupLayout;
 
@@ -56,6 +59,7 @@ export class MeshDeformation {
   render_to_buf_module: GPUShaderModule;
   render_to_buf_bind_group_layout: GPUBindGroupLayout;
   render_to_buf_compute_pipeline: GPUComputePipeline;
+  mode_buf: GPUBuffer;
 
   render_module: GPUShaderModule;
   render_pipeline: GPURenderPipeline;
@@ -80,10 +84,13 @@ export class MeshDeformation {
     this.max_dist = max_dist;
     this.radius = radius;
 
+    this.draw_nodes = true;
     this.draw_edges = true;
     this.reinit = false;
 
     this.n_elems = this.grid_x * this.grid_y;
+
+    this.ridx = 0;
 
     this.initialization_done = this.async_init();
   }
@@ -162,6 +169,17 @@ export class MeshDeformation {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this.image_reset = new Float32Array(this.ctx.canvas.width * this.ctx.canvas.height * 4);
+    this.random_buf = this.device.createBuffer({
+      label: "random_buf",
+      size: this.ctx.canvas.width * this.ctx.canvas.height * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    this.mode_buf = this.device.createBuffer({
+      label: "mode_buf",
+      size: 4,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     console.log("done allocate buffers");
 
     this.force_bind_group_layout = this.device.createBindGroupLayout({
@@ -299,6 +317,7 @@ export class MeshDeformation {
       this.ctx.canvas.width,
       this.ctx.canvas.height,
       this.grid_x,
+      this.grid_y,
       this.grid_spacing,
       this.n_elems,
       this.radius
@@ -335,6 +354,13 @@ export class MeshDeformation {
         },
         {
           binding: 4,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "uniform",
+          },
+        },
+        {
+          binding: 5,
           visibility: GPUShaderStage.COMPUTE,
           buffer: {
             type: "uniform",
@@ -555,7 +581,31 @@ fn fragment_main(@builtin(position) position: vec4f) -> @location(0) vec4f
       // console.log("queue", offset);
     }
 
-    this.device.queue.writeBuffer(this.image_buf, 0, this.image_reset);
+    // if (this.ridx == 0) {
+    //   let random_src = new Uint32Array(this.random_buf.size / 4);
+    //   for (let i = 0; i < random_src.length; i++) {
+    //     let r = Math.floor(256 * Math.random());
+    //     let g = Math.floor(256 * Math.random());
+    //     let b = Math.floor(256 * Math.random());
+    //     let v = r;
+    //     v = ((r * 256 + g) * 256 + b) * 256;
+    //     random_src[i] = v;
+    //   }
+    //   this.device.queue.writeBuffer(this.random_buf, 0, random_src.buffer, 0);
+    // }
+    // this.ridx++;
+    // this.ridx%=10;
+
+    let mode = 0;
+    if (this.draw_nodes) {
+      mode += 1;
+    }
+    if (this.draw_edges) {
+      mode += 2;
+    }
+    this.device.queue.writeBuffer(
+      this.mode_buf, 0, new Uint32Array([mode]).buffer, 0, 4);
+    this.device.queue.writeBuffer(this.image_buf, 0, this.image_reset, 0);
     for (let offset = 0; offset < this.n_elems; offset += 256) {
       this.device.queue.writeBuffer(
         this.offset_buf, 0, new Uint32Array([offset]).buffer, 0, 4);
@@ -571,7 +621,14 @@ fn fragment_main(@builtin(position) position: vec4f) -> @location(0) vec4f
         },
       });
 
-      let buffers = [output_x, output_y, this.intensity_map_buf, this.image_buf, this.offset_buf];
+      let buffers = [
+        output_x,
+        output_y,
+        this.intensity_map_buf,
+        this.image_buf,
+        this.offset_buf,
+        this.mode_buf,
+      ];
       const bindGroup = this.device.createBindGroup({
         layout: this.render_to_buf_bind_group_layout,
         entries: buffers.map((b, i) => { return { binding: i, resource: { buffer: b } }; })
@@ -607,7 +664,7 @@ fn fragment_main(@builtin(position) position: vec4f) -> @location(0) vec4f
       const bindGroup = this.device.createBindGroup({
         label: 'render_bind_group',
         layout: this.render_bind_group_layout,
-        entries: [{binding: 0, resource: {buffer: this.image_buf}}],
+        entries: [{ binding: 0, resource: { buffer: this.image_buf } }],
       });
       passEncoder.setBindGroup(0, bindGroup);
       passEncoder.draw(6);
