@@ -1,3 +1,6 @@
+Generative art project that deforms a mesh of points based on some input "mass" image or video.
+Particle simulation is done via WebGPU.
+
 Build instructions:
 
 ```bash
