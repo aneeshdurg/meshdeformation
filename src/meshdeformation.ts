@@ -1,5 +1,6 @@
 import { build as initbuild } from './init';
 import { build as forcesbuild } from './forces';
+import { build as renderbuild } from './render';
 
 const edges = [
   [-1, 0],
@@ -46,7 +47,21 @@ export class MeshDeformation {
   offset_buf: GPUBuffer;
   stride_buf: GPUBuffer;
 
+  image_buf: GPUBuffer;
+  image_reset: Float32Array;
+
   force_bind_group_layout: GPUBindGroupLayout;
+
+
+  render_to_buf_module: GPUShaderModule;
+  render_to_buf_bind_group_layout: GPUBindGroupLayout;
+  render_to_buf_compute_pipeline: GPUComputePipeline;
+
+  render_module: GPUShaderModule;
+  render_pipeline: GPURenderPipeline;
+  render_pass_descriptor: GPURenderPassDescriptor;
+  vertex_buffer: GPUBuffer;
+  render_bind_group_layout: GPUBindGroupLayout;
 
   constructor(
     ctx: CanvasRenderingContext2D,
@@ -140,6 +155,13 @@ export class MeshDeformation {
       size: 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+
+    this.image_buf = this.device.createBuffer({
+      label: "image_buf",
+      size: this.ctx.canvas.width * this.ctx.canvas.height * 4 * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.image_reset = new Float32Array(this.ctx.canvas.width * this.ctx.canvas.height * 4);
     console.log("done allocate buffers");
 
     this.force_bind_group_layout = this.device.createBindGroupLayout({
@@ -270,33 +292,185 @@ export class MeshDeformation {
     );
     this.device.queue.submit([commandEncoder.finish()]);
 
-    await this.updateCPUpos();
+
+    // intialize this.x_pos_buffers[this.active_buffer_id] and
+    // this.y_pos_buffers[*] to be a grid
+    const render_to_buffer_shader = renderbuild(
+      this.ctx.canvas.width,
+      this.ctx.canvas.height,
+      this.grid_x,
+      this.grid_spacing,
+      this.n_elems,
+      this.radius
+    );
+    this.render_to_buf_bind_group_layout = this.device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "storage",
+          },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "storage",
+          },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "storage",
+          },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "storage",
+          },
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: "uniform",
+          },
+        },
+      ],
+    });
+
+    this.render_to_buf_module = this.device.createShaderModule({
+      code: render_to_buffer_shader,
+    });
+    this.render_to_buf_compute_pipeline = this.device.createComputePipeline({
+      label: "compute force",
+      layout: this.device.createPipelineLayout({
+        bindGroupLayouts: [this.render_to_buf_bind_group_layout],
+      }),
+      compute: {
+        module: this.render_to_buf_module,
+        entryPoint: "main",
+      },
+    });
+
+
+    (this.ctx as any).configure({
+      device: this.device,
+      format: navigator.gpu.getPreferredCanvasFormat(),
+    });
+
+    const vertices = new Float32Array([
+      -1, -1,
+      1, -1,
+      -1, 1,
+      -1, 1,
+      1, -1,
+      1, 1,
+    ]);
+    this.vertex_buffer = this.device.createBuffer({
+      size: vertices.byteLength,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.vertex_buffer, 0, vertices, 0, vertices.length);
+
+    const shaders = `
+@group(0) @binding(0)
+var<storage, read_write> image_map: array<f32>;
+
+@vertex
+fn vertex_main(@location(0) position: vec2f) -> @builtin(position) vec4f
+{
+  return vec4f(position.x, position.y, 0, 1);
+}
+
+@fragment
+fn fragment_main(@builtin(position) position: vec4f) -> @location(0) vec4f
+{
+  let i = 4 * u32(position.x - 500 + position.y * ${this.ctx.canvas.width});
+  return vec4f(
+    image_map[i + 0],
+    image_map[i + 1],
+    image_map[i + 2],
+    image_map[i + 3]);
+}
+`;
+    const shaderModule = this.device.createShaderModule({
+      code: shaders,
+    });
+
+    this.render_bind_group_layout = this.device.createBindGroupLayout({
+      label: 'render_bind_group_layout',
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: {
+            type: "storage",
+          },
+        },
+      ],
+    });
+
+    const vertexBuffers = [
+      {
+        attributes: [
+          {
+            shaderLocation: 0, // position
+            offset: 0,
+            format: "float32x2",
+          },
+        ],
+        arrayStride: 4 * 2,
+        stepMode: "vertex",
+      },
+    ];
+    const pipelineDescriptor = {
+      vertex: {
+        module: shaderModule,
+        entryPoint: "vertex_main",
+        buffers: vertexBuffers,
+      },
+      fragment: {
+        module: shaderModule,
+        entryPoint: "fragment_main",
+        targets: [
+          {
+            format: navigator.gpu.getPreferredCanvasFormat(),
+          },
+        ],
+      },
+      primitive: {
+        topology: "triangle-list",
+      },
+      layout: this.device.createPipelineLayout({
+        label: 'render_bind_group_pipeline_layout',
+        bindGroupLayouts: [this.render_bind_group_layout],
+      })
+    };
+
+    this.render_pipeline = this.device.createRenderPipeline(
+      pipelineDescriptor as GPURenderPipelineDescriptor);
+
+    const clearColor = { r: 0.0, g: 0.5, b: 1.0, a: 1.0 };
+
+    this.render_pass_descriptor = {
+      colorAttachments: [
+        {
+          clearValue: clearColor,
+          loadOp: "clear",
+          storeOp: "store",
+          view: (this.ctx as any).getCurrentTexture().createView(),
+        },
+      ],
+    } as GPURenderPassDescriptor;
+
     console.log("done async init");
   }
 
-  async updateCPUpos() {
-    // console.log("Map buffers for reading");
-    let m_x = this.staging_x_buf.mapAsync(GPUMapMode.READ, 0, this.staging_x_buf.size);
-    let m_y = this.staging_y_buf.mapAsync(GPUMapMode.READ, 0, this.staging_y_buf.size);
-    await m_x;
-    await m_y;
-
-    // console.log("copying x buffer to CPU");
-    const copyArrayBufferX = this.staging_x_buf.getMappedRange(0, this.staging_x_buf.size);
-    const dataX = copyArrayBufferX.slice();
-    this.x_pos = new Float32Array(dataX);
-
-    // console.log("copying y buffer to CPU");
-    const copyArrayBufferY = this.staging_y_buf.getMappedRange(0, this.staging_y_buf.size);
-    const dataY = copyArrayBufferY.slice();
-    this.y_pos = new Float32Array(dataY);
-
-    // console.log("unmap buffers");
-    this.staging_x_buf.unmap();
-    this.staging_y_buf.unmap();
-
-    // console.log("Done updateCPUpos");
-  }
 
   async applyForce(ctx: CanvasRenderingContext2D) {
     let idata = ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height).data;
@@ -381,6 +555,37 @@ export class MeshDeformation {
       // console.log("queue", offset);
     }
 
+    this.device.queue.writeBuffer(this.image_buf, 0, this.image_reset);
+    for (let offset = 0; offset < this.n_elems; offset += 256) {
+      this.device.queue.writeBuffer(
+        this.offset_buf, 0, new Uint32Array([offset]).buffer, 0, 4);
+
+      const computePipeline = this.device.createComputePipeline({
+        label: "render_to_buf_pipeline",
+        layout: this.device.createPipelineLayout({
+          bindGroupLayouts: [this.render_to_buf_bind_group_layout],
+        }),
+        compute: {
+          module: this.render_to_buf_module,
+          entryPoint: "main",
+        },
+      });
+
+      let buffers = [output_x, output_y, this.intensity_map_buf, this.image_buf, this.offset_buf];
+      const bindGroup = this.device.createBindGroup({
+        layout: this.render_to_buf_bind_group_layout,
+        entries: buffers.map((b, i) => { return { binding: i, resource: { buffer: b } }; })
+      });
+
+      const commandEncoder = this.device.createCommandEncoder();
+      const passEncoder = commandEncoder.beginComputePass();
+      passEncoder.setPipeline(computePipeline);
+      passEncoder.setBindGroup(0, bindGroup);
+      passEncoder.dispatchWorkgroups(1, 1, 1);
+      passEncoder.end();
+      this.device.queue.submit([commandEncoder.finish()]);
+    }
+
     const copy_output_commandEncoder = this.device.createCommandEncoder();
     // Copy output buffer to staging buffer
     copy_output_commandEncoder.copyBufferToBuffer(
@@ -394,48 +599,24 @@ export class MeshDeformation {
     // End frame by passing array of command buffers to command queue for execution
     this.device.queue.submit([copy_output_commandEncoder.finish()]);
     // console.log("done submit to queue");
+    {
+      const commandEncoder = this.device.createCommandEncoder();
+      const passEncoder = commandEncoder.beginRenderPass(this.render_pass_descriptor);
+      passEncoder.setPipeline(this.render_pipeline);
+      passEncoder.setVertexBuffer(0, this.vertex_buffer);
+      const bindGroup = this.device.createBindGroup({
+        label: 'render_bind_group',
+        layout: this.render_bind_group_layout,
+        entries: [{binding: 0, resource: {buffer: this.image_buf}}],
+      });
+      passEncoder.setBindGroup(0, bindGroup);
+      passEncoder.draw(6);
+      passEncoder.end();
+
+      this.device.queue.submit([commandEncoder.finish()]);
+    }
 
     // Swap input and output:
     this.active_buffer_id = 1 - this.active_buffer_id;
-
-    // await this.updateCPUpos();
-    // console.log("done applyForce");
-  }
-
-  draw() {
-    this.ctx.clearRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height);
-    for (let yidx = 0; yidx < this.grid_y; yidx++) {
-      for (let xidx = 0; xidx < this.grid_x; xidx++) {
-        let i = yidx * this.grid_x + xidx;
-
-        let x = this.x_pos[i];
-        let y = this.y_pos[i];
-
-        this.ctx.strokeStyle = "#ff00005f";
-        this.ctx.beginPath();
-        this.ctx.arc(x, y, this.radius, 0, 2 * Math.PI);
-        this.ctx.stroke();
-
-        if (this.draw_edges) {
-          for (let edge of edges) {
-            let j_xidx = xidx + edge[0];
-            let j_yidx = yidx + edge[1];
-            if (j_xidx < 0 || j_xidx >= this.grid_x || j_yidx < 0 || j_yidx >= this.grid_y) {
-              continue;
-            }
-
-            let j = j_yidx * this.grid_x + j_xidx;
-
-            let j_x = this.x_pos[j];
-            let j_y = this.y_pos[j];
-
-            this.ctx.beginPath();
-            this.ctx.moveTo(x, y);
-            this.ctx.lineTo(j_x, j_y);
-            this.ctx.stroke();
-          }
-        }
-      }
-    }
   }
 }

@@ -105,7 +105,12 @@ local_id : vec3u,
       let dist2 = d_x * d_x + d_y * d_y;
       let max_dist2 = f32(region * region);
 
-      let speed = dist2 / max_dist2;
+      var speed = dist2 / max_dist2;
+      if (dist2 < f32(5)) {
+        speed = f32(1);
+      } else {
+        speed = f32(0.5);
+      }
 
       d_x *= speed;
       d_y *= speed;

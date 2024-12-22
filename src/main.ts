@@ -31,15 +31,16 @@ async function main(container: HTMLElement) {
   canvas.height = 1000;
   container.appendChild(canvas);
 
-  let ctx = canvas.getContext("2d");
+  // let ctx = canvas.getContext("2d");
+  let ctx = canvas.getContext("webgpu");
   console.log("Created context for main canvas");
 
   let canvas2 = document.createElement("canvas") as HTMLCanvasElement;
   canvas2.width = 1000;
   canvas2.height = 1000;
   let ctx2 = canvas2.getContext("2d");
+  // document.body.appendChild(canvas2);
 
-  // let idata: Uint8ClampedArray<ArrayBufferLike> = new Uint8ClampedArray(ctx2.canvas.width * ctx.canvas.height * 4);
   canvas.addEventListener("click", (e) => {
     let el = e.target as HTMLCanvasElement;
     const rect = el.getBoundingClientRect();
@@ -74,12 +75,15 @@ async function main(container: HTMLElement) {
 
   (window as any).n_steps_per_frame = 1;
 
-  let n_elems = 100;
+  let n_elems = 200;
   let spacing = ctx.canvas.width / n_elems;
   let md = new MeshDeformation(ctx, n_elems, n_elems, spacing, spacing / 4, spacing * 4, 1);
   (window as any).t_per_render = 0;
   (window as any).n_renders = 0;
   (window as any).write_time = 0;
+  (window as any).interval = 0;
+  let theta = 0;
+  let last_start = 0;
   md.initialization_done.then(() => {
     const f = async () => {
       let start = performance.now();
@@ -89,6 +93,23 @@ async function main(container: HTMLElement) {
       let end = performance.now();
       (window as any).t_per_render += end - start;
       (window as any).n_renders += 1;
+
+
+      if (video.readyState == 4) {
+        ctx2.drawImage(video, 0, 0, ctx2.canvas.width, ctx2.canvas.height);
+      }
+      // ctx2.clearRect(0, 0, ctx2.canvas.width, ctx2.canvas.height);
+      let x = Math.sin(theta) * 450 + 500;
+      let y = Math.cos(theta) * 450 + 500;
+      ctx2.beginPath();
+      ctx2.fillStyle = "black";
+      ctx2.arc(x, y, 100, 0, 2 * Math.PI);
+      ctx2.fill();
+
+      theta += 0.1;
+
+      (window as any).interval += start - last_start;
+      last_start = start;
       if (!stop) {
         requestAnimationFrame(f)
       }
@@ -96,36 +117,17 @@ async function main(container: HTMLElement) {
     requestAnimationFrame(f);
 
     (window as any).t_per_draw = 0;
+    (window as any).t_per_read = 0;
     (window as any).n_draws = 0;
-    const g = async () => {
-      if (video.readyState != 4) {
-        return;
-      }
-      ctx2.drawImage(video, 0, 0, ctx2.canvas.width, ctx2.canvas.height);
-
-      let start = performance.now();
-      await md.updateCPUpos();
-      md.draw();
-      let end = performance.now();
-      (window as any).t_per_draw += end - start;
-      (window as any).n_draws += 1;
-      setTimeout(() => {
-        requestAnimationFrame(g)
-      }, 30);
-    };
-    requestAnimationFrame(g);
   });
 
   (window as any).stats = () => {
     let w = window as any;
-    console.log("t_per_render", w.t_per_render);
-    console.log("n_renders", w.n_renders);
-    console.log("avg", w.t_per_render / w.n_renders);
-    console.log("t_per_write", w.write_time);
-    console.log("  avg", w.write_time / w.n_renders);
-    console.log("t_per_draw", w.t_per_draw);
-    console.log("n_draws", w.n_draws);
-    console.log("avg", w.t_per_draw / w.n_draws);
+    console.log("avg_interval", w.interval / w.n_renders);
+    console.log("avg_t_per_render", w.t_per_render / w.n_renders);
+    console.log("avg_t_per_write", w.write_time / w.n_renders);
+    console.log("avg_t_per_draw", w.t_per_draw / w.n_draws);
+    console.log("avg_t_per_read", w.t_per_read / w.n_draws);
   }
 
 
